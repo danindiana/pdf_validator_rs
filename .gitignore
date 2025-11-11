@@ -1,2 +1,8 @@
 /target
 validation_report_rust.txt
+*.partial
+CREDENTIALS_SUMMARY.md
+.env
+.env.*
+*.secret
+*.key
