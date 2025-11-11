@@ -339,4 +339,26 @@ Built with Rust and powered by:
 
 ---
 
+## Build Information
+
+### Development Environment
+- **Rust Version**: rustc 1.90.0 (1159e78c4 2025-09-14)
+- **Cargo Version**: cargo 1.90.0 (840b83a10 2025-07-30)
+- **Operating System**: Ubuntu 22.04.5 LTS (Jammy Jellyfish)
+- **Linux Kernel**: 6.8.0-87-generic
+- **Build Date**: Mon Nov 10 23:22:26 CST 2025
+- **Unix Timestamp**: 1762838546
+
+### System Requirements
+- **Minimum Rust**: 1.70 or higher
+- **Recommended OS**: Linux (Ubuntu 20.04+), macOS, Windows 10+
+- **Architecture**: x86_64, aarch64
+
+### Tested Platforms
+- ✅ Ubuntu 22.04 LTS (Primary development environment)
+- ✅ Linux Kernel 6.8.0+
+- ✅ Rust 1.90.0
+
+---
+
 **Generated with [Claude Code](https://claude.com/claude-code)**
