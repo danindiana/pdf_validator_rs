@@ -1,4 +1,46 @@
-# PDF Validator (Rust Edition)
+<div align="center">
+
+```
+███████╗██████╗ ███████╗    ██╗   ██╗ █████╗ ██╗     ██╗██████╗  █████╗ ████████╗ ██████╗ ██████╗
+██╔════╝██╔══██╗██╔════╝    ██║   ██║██╔══██╗██║     ██║██╔══██╗██╔══██╗╚══██╔══╝██╔═══██╗██╔══██╗
+███████╗██║  ██║█████╗      ██║   ██║███████║██║     ██║██║  ██║███████║   ██║   ██║   ██║██████╔╝
+╚════██║██║  ██║██╔══╝      ╚██╗ ██╔╝██╔══██║██║     ██║██║  ██║██╔══██║   ██║   ██║   ██║██╔══██╗
+███████║██████╔╝██║          ╚████╔╝ ██║  ██║███████╗██║██████╔╝██║  ██║   ██║   ╚██████╔╝██║  ██║
+╚══════╝╚═════╝ ╚═╝           ╚═══╝  ╚═╝  ╚═╝╚══════╝╚═╝╚═════╝ ╚═╝  ╚═╝   ╚═╝    ╚═════╝ ╚═╝  ╚═╝
+```
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://img.shields.io/badge/Rust-1.90.0-FF6B35?style=for-the-badge&logo=rust&logoColor=white">
+  <img alt="Rust Version" src="https://img.shields.io/badge/Rust-1.90.0-FF6B35?style=for-the-badge&logo=rust&logoColor=white">
+</picture>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://img.shields.io/badge/Ubuntu-22.04_LTS-FF6B35?style=for-the-badge&logo=ubuntu&logoColor=white">
+  <img alt="Ubuntu" src="https://img.shields.io/badge/Ubuntu-22.04_LTS-FF6B35?style=for-the-badge&logo=ubuntu&logoColor=white">
+</picture>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://img.shields.io/badge/Parallel-Rayon-FF6B35?style=for-the-badge&logo=apache-spark&logoColor=white">
+  <img alt="Parallel Processing" src="https://img.shields.io/badge/Parallel-Rayon-FF6B35?style=for-the-badge&logo=apache-spark&logoColor=white">
+</picture>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://img.shields.io/badge/License-Open_Source-FF6B35?style=for-the-badge">
+  <img alt="License" src="https://img.shields.io/badge/License-Open_Source-FF6B35?style=for-the-badge">
+</picture>
+
+```
+╔═══════════════════════════════════════════════════════════════════════════════╗
+║                                                                               ║
+║   🦀 HIGH-PERFORMANCE PARALLEL PDF VALIDATION TOOL WRITTEN IN RUST 🦀        ║
+║                                                                               ║
+║   ⚡ Parallel Processing  │  🔍 Duplicate Detection  │  📊 Detailed Reports  ║
+║                                                                               ║
+╚═══════════════════════════════════════════════════════════════════════════════╝
+```
+
+</div>
+
+---
+
+## 🚀 Overview
 
 A high-performance, parallel PDF validation tool written in Rust. Validates PDF files for corruption, detects duplicates, and provides comprehensive reporting.
 
