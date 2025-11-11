@@ -2,13 +2,24 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use indicatif::{ParallelProgressIterator, ProgressBar, ProgressStyle};
 use rayon::prelude::*;
-use std::fs;
+use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
+use std::fs::{self, File};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::SystemTime;
 
 // Import from our modularized library
 use pdf_validator_rs::prelude::*;
+
+/// Checkpoint data for resuming validation
+#[derive(Serialize, Deserialize)]
+struct Checkpoint {
+    completed_paths: Vec<PathBuf>,
+    timestamp: SystemTime,
+    total_files: usize,
+}
 
 #[derive(Parser)]
 #[command(name = "pdf_validator_rs")]
@@ -28,6 +39,10 @@ struct Cli {
     /// Output report filename
     #[arg(short, long, default_value = "validation_report_rust.txt")]
     output: PathBuf,
+
+    /// Resume from a previous checkpoint file
+    #[arg(long)]
+    resume_from: Option<PathBuf>,
 
     /// Delete invalid/corrupted PDF files
     #[arg(long)]
@@ -84,16 +99,54 @@ fn main() -> Result<()> {
     println!("Using {} worker thread(s)", num_threads);
     println!();
 
-    // Collect PDF files
-    let pdf_files = collect_pdf_files(&cli.directory, cli.recursive)?;
-    let total_files = pdf_files.len();
+    // Load checkpoint if resuming
+    let mut completed_files: HashSet<PathBuf> = HashSet::new();
+    if let Some(ref checkpoint_path) = cli.resume_from {
+        if checkpoint_path.exists() {
+            match load_checkpoint(checkpoint_path) {
+                Ok(checkpoint) => {
+                    completed_files = checkpoint.completed_paths.into_iter().collect();
+                    println!("📂 Resuming from checkpoint: {}", checkpoint_path.display());
+                    println!("   Already validated {} files", completed_files.len());
+                    println!();
+                }
+                Err(e) => {
+                    eprintln!("⚠️  Warning: Failed to load checkpoint: {}", e);
+                    eprintln!("   Starting fresh validation...\n");
+                }
+            }
+        } else {
+            eprintln!("⚠️  Warning: Checkpoint file not found: {}", checkpoint_path.display());
+            eprintln!("   Starting fresh validation...\n");
+        }
+    }
 
-    if total_files == 0 {
+    // Collect PDF files
+    let all_pdf_files = collect_pdf_files(&cli.directory, cli.recursive)?;
+    
+    // Filter out already-completed files
+    let pdf_files: Vec<PathBuf> = all_pdf_files
+        .into_iter()
+        .filter(|path| !completed_files.contains(path))
+        .collect();
+    
+    let total_files = pdf_files.len();
+    let already_completed = completed_files.len();
+
+    if total_files == 0 && already_completed > 0 {
+        println!("✅ All {} PDF files already validated!", already_completed);
+        return Ok(());
+    } else if total_files == 0 {
         println!("No PDF files found in the specified directory.");
         return Ok(());
     }
 
-    println!("Found {} PDF file(s) to validate\n", total_files);
+    if already_completed > 0 {
+        println!("Found {} new PDF file(s) to validate ({} already completed)\n", 
+            total_files, already_completed);
+    } else {
+        println!("Found {} PDF file(s) to validate\n", total_files);
+    }
 
     // Set up progress bar (skip in batch mode)
     let progress = if cli.batch {
@@ -113,6 +166,14 @@ fn main() -> Result<()> {
     let check_rendering = !cli.no_render_check;
     let use_lenient = cli.lenient;
     let shutdown_check = shutdown_requested.clone();
+    
+    // Partial results file for incremental saving
+    let partial_output = PathBuf::from(format!("{}.partial", cli.output.display()));
+    let checkpoint_output = PathBuf::from(format!("{}.checkpoint", cli.output.display()));
+    
+    // Thread-safe accumulator for completed paths
+    let completed_paths: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(Vec::new()));
+    let completed_clone = completed_paths.clone();
 
     let results: Vec<ValidationResult> = pdf_files
         .par_iter()
@@ -141,6 +202,11 @@ fn main() -> Result<()> {
                 // Normal strict mode
                 validate_pdf(path, cli.verbose)
             };
+            
+            // Track completed path for checkpoint
+            if let Ok(mut paths) = completed_clone.lock() {
+                paths.push(path.clone());
+            }
 
             Some(ValidationResult {
                 path: path.clone(),
@@ -152,6 +218,22 @@ fn main() -> Result<()> {
     // Display progress summary
     let processed_count = results.len();
     let was_interrupted = shutdown_requested.load(Ordering::SeqCst);
+    
+    // Save checkpoint if interrupted
+    if was_interrupted {
+        if let Ok(paths) = completed_paths.lock() {
+            // Add previously completed files from checkpoint
+            let mut all_completed: Vec<PathBuf> = completed_files.into_iter().collect();
+            all_completed.extend(paths.clone());
+            
+            if let Err(e) = save_checkpoint(&checkpoint_output, all_completed, total_files + already_completed) {
+                eprintln!("⚠️  Warning: Failed to save checkpoint: {}", e);
+            } else {
+                eprintln!("💾 Checkpoint saved to: {}", checkpoint_output.display());
+                eprintln!("💡 Resume later with: --resume-from {}", checkpoint_output.display());
+            }
+        }
+    }
     
     if !cli.batch {
         if was_interrupted {
@@ -248,12 +330,50 @@ fn main() -> Result<()> {
     }
 
     // Write report
+    let output_file = if was_interrupted {
+        // Write to partial file if interrupted
+        &partial_output
+    } else {
+        // Use final output if completed
+        &cli.output
+    };
+    
     write_report(
-        &cli.output,
+        output_file,
         &results,
         duplicates.as_deref(),
     )?;
-    println!("Detailed report saved to: {:?}", cli.output);
+    
+    if was_interrupted {
+        println!("Partial results saved to: {:?}", partial_output);
+    } else {
+        println!("Detailed report saved to: {:?}", cli.output);
+        // Clean up checkpoint if we completed successfully
+        let _ = fs::remove_file(&checkpoint_output);
+    }
 
+    Ok(())
+}
+
+/// Load checkpoint from file
+fn load_checkpoint(path: &PathBuf) -> Result<Checkpoint> {
+    let file = File::open(path)
+        .context("Failed to open checkpoint file")?;
+    let checkpoint: Checkpoint = serde_json::from_reader(file)
+        .context("Failed to parse checkpoint file")?;
+    Ok(checkpoint)
+}
+
+/// Save checkpoint to file
+fn save_checkpoint(path: &PathBuf, completed_paths: Vec<PathBuf>, total_files: usize) -> Result<()> {
+    let checkpoint = Checkpoint {
+        completed_paths,
+        timestamp: SystemTime::now(),
+        total_files,
+    };
+    let file = File::create(path)
+        .context("Failed to create checkpoint file")?;
+    serde_json::to_writer_pretty(file, &checkpoint)
+        .context("Failed to write checkpoint file")?;
     Ok(())
 }

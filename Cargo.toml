@@ -20,6 +20,8 @@ sha2 = "0.10"
 lazy_static = "1.5"
 tokio = { version = "1.41", features = ["sync"] }
 ctrlc = "3.4"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 
 # PDF parsing - using lopdf for basic validation
 lopdf = "0.34"
