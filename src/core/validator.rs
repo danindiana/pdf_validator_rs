@@ -4,9 +4,16 @@ use anyhow::Result;
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
+use std::sync::Mutex;
 
 #[cfg(feature = "rendering")]
 use pdfium_render::prelude::*;
+
+// Global mutex to serialize lopdf calls and prevent memory corruption
+// lopdf has known issues with parallel processing of malformed PDFs
+lazy_static::lazy_static! {
+    static ref LOPDF_MUTEX: Mutex<()> = Mutex::new(());
+}
 
 /// Validate a PDF file
 ///
@@ -57,6 +64,10 @@ pub fn validate_pdf_with_lopdf(path: &Path) -> Result<bool> {
     // Use catch_unwind to prevent panics from crashing the entire process
     let path_clone = path.to_path_buf();
     let result = panic::catch_unwind(|| {
+        // Acquire mutex to serialize lopdf calls - prevents memory corruption
+        // from parallel processing of malformed PDFs
+        let _guard = LOPDF_MUTEX.lock().unwrap();
+
         match lopdf::Document::load(&path_clone) {
             Ok(doc) => {
                 // Check if document has pages
@@ -92,6 +103,9 @@ pub fn validate_pdf_detailed(path: &Path) -> (bool, Option<String>) {
     use std::panic;
 
     let result = panic::catch_unwind(|| {
+        // Acquire mutex to serialize lopdf calls
+        let _guard = LOPDF_MUTEX.lock().unwrap();
+
         match lopdf::Document::load(path) {
             Ok(doc) => {
                 if doc.get_pages().is_empty() {

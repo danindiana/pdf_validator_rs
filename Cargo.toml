@@ -17,6 +17,7 @@ anyhow = "1.0"
 indicatif = { version = "0.17", features = ["rayon"] }
 walkdir = "2.5"
 sha2 = "0.10"
+lazy_static = "1.5"
 
 # PDF parsing - using lopdf for basic validation
 lopdf = "0.34"
