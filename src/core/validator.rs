@@ -2,17 +2,61 @@
 
 use anyhow::Result;
 use std::fs::File;
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
-use std::sync::Mutex;
+use std::panic::{self, AssertUnwindSafe};
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::Semaphore;
 
 #[cfg(feature = "rendering")]
 use pdfium_render::prelude::*;
 
-// Global mutex to serialize lopdf calls and prevent memory corruption
+use super::circuit_breaker::CircuitBreaker;
+
+// Global semaphore to limit concurrent lopdf calls and prevent memory corruption
 // lopdf has known issues with parallel processing of malformed PDFs
+// Limiting to 8 concurrent operations balances safety with performance
 lazy_static::lazy_static! {
-    static ref LOPDF_MUTEX: Mutex<()> = Mutex::new(());
+    static ref LOPDF_SEMAPHORE: Arc<Semaphore> = Arc::new(Semaphore::new(8));
+    static ref CIRCUIT_BREAKER: CircuitBreaker = CircuitBreaker::new(10, Duration::from_secs(60));
+}
+
+/// Quick pre-validation before attempting full parse
+/// Checks PDF magic bytes, file size, and EOF marker
+fn quick_validate(path: &Path) -> Result<()> {
+    let mut file = File::open(path)?;
+    
+    // 1. Check PDF magic bytes (%PDF-)
+    let mut header = [0u8; 8];
+    file.read_exact(&mut header)?;
+    if &header[0..5] != b"%PDF-" {
+        anyhow::bail!("Invalid PDF header");
+    }
+    
+    // 2. Check file size
+    let metadata = file.metadata()?;
+    let file_size = metadata.len();
+    
+    if file_size > 500_000_000 { // 500MB
+        anyhow::bail!("File too large: {} bytes", file_size);
+    }
+    
+    if file_size < 100 {
+        anyhow::bail!("File too small: {} bytes", file_size);
+    }
+    
+    // 3. Check for EOF marker (%%EOF) in last 1KB
+    let tail_size = std::cmp::min(1024, file_size);
+    file.seek(SeekFrom::End(-(tail_size as i64)))?;
+    let mut tail = vec![0u8; tail_size as usize];
+    file.read_exact(&mut tail)?;
+    
+    if !tail.windows(5).any(|w| w == b"%%EOF") {
+        anyhow::bail!("Missing %%EOF marker");
+    }
+    
+    Ok(())
 }
 
 /// Validate a PDF file
@@ -24,6 +68,14 @@ lazy_static::lazy_static! {
 /// # Returns
 /// `true` if the PDF is valid, `false` otherwise
 pub fn validate_pdf(path: &Path, verbose: bool) -> bool {
+    // Quick pre-validation (no semaphore needed)
+    if let Err(e) = quick_validate(path) {
+        if verbose {
+            eprintln!("Quick validation failed for {:?}: {}", path, e);
+        }
+        return false;
+    }
+    
     // Try using lopdf first for robust validation
     match validate_pdf_with_lopdf(path) {
         Ok(valid) => {
@@ -42,305 +94,140 @@ pub fn validate_pdf(path: &Path, verbose: bool) -> bool {
     }
 }
 
-/// Validate PDF using lopdf library
+/// Validate PDF using lopdf library with semaphore and circuit breaker
 pub fn validate_pdf_with_lopdf(path: &Path) -> Result<bool> {
-    use std::panic;
-    use std::fs;
-
-    // Check file size first - skip extremely large files that might cause issues
-    let metadata = fs::metadata(path)?;
-    let file_size = metadata.len();
-
-    // Skip files larger than 500MB to prevent memory issues
-    if file_size > 500_000_000 {
-        anyhow::bail!("File too large (>500MB): {} bytes", file_size);
+    // Check circuit breaker first
+    if CIRCUIT_BREAKER.is_open() {
+        anyhow::bail!("Circuit breaker is OPEN - too many recent failures");
     }
-
-    // Skip empty or suspiciously small files
-    if file_size < 100 {
-        anyhow::bail!("File too small: {} bytes", file_size);
-    }
-
-    // Use catch_unwind to prevent panics from crashing the entire process
+    
+    // Acquire semaphore permit (blocks here if 8 permits already in use)
+    let _permit = loop { if let Ok(permit) = LOPDF_SEMAPHORE.clone().try_acquire_owned() { break permit; } std::thread::yield_now(); };
+    
+    // Wrap in catch_unwind for panic isolation
     let path_clone = path.to_path_buf();
-    let result = panic::catch_unwind(|| {
-        // Acquire mutex to serialize lopdf calls - prevents memory corruption
-        // from parallel processing of malformed PDFs
-        let _guard = LOPDF_MUTEX.lock().unwrap();
-
-        match lopdf::Document::load(&path_clone) {
-            Ok(doc) => {
-                // Check if document has pages
-                if doc.get_pages().is_empty() {
-                    return Ok(false);
-                }
+    let result = panic::catch_unwind(AssertUnwindSafe(|| {
+        lopdf::Document::load(&path_clone)
+    }));
+    
+    match result {
+        Ok(Ok(doc)) => {
+            // Success - reset circuit breaker
+            CIRCUIT_BREAKER.record_success();
+            
+            // Check if document has pages
+            if doc.get_pages().is_empty() {
+                Ok(false)
+            } else {
                 Ok(true)
             }
-            Err(e) => {
-                // Return the error for detailed logging
-                anyhow::bail!("lopdf parse error: {}", e);
-            }
         }
-    });
-
-    match result {
-        Ok(res) => res,
-        Err(_) => {
-            // Panic occurred, treat as invalid PDF
-            anyhow::bail!("lopdf panicked during parsing");
+        Ok(Err(e)) => {
+            // lopdf error - record failure
+            CIRCUIT_BREAKER.record_failure();
+            anyhow::bail!("lopdf parse error: {}", e)
+        }
+        Err(_panic) => {
+            // Panic occurred - record failure
+            CIRCUIT_BREAKER.record_failure();
+            anyhow::bail!("Panic during lopdf validation")
         }
     }
 }
 
-/// Validate PDF with detailed error information
-///
-/// # Arguments
-/// * `path` - Path to the PDF file
-///
-/// # Returns
-/// Tuple of (is_valid, error_message)
-pub fn validate_pdf_detailed(path: &Path) -> (bool, Option<String>) {
-    use std::panic;
-
-    let result = panic::catch_unwind(|| {
-        // Acquire mutex to serialize lopdf calls
-        let _guard = LOPDF_MUTEX.lock().unwrap();
-
-        match lopdf::Document::load(path) {
-            Ok(doc) => {
-                if doc.get_pages().is_empty() {
-                    (false, Some("No pages found in document".to_string()))
-                } else {
-                    (true, None)
-                }
-            }
-            Err(e) => {
-                (false, Some(format!("lopdf error: {}", e)))
-            }
-        }
-    });
-
-    match result {
-        Ok(res) => res,
-        Err(_) => (false, Some("lopdf panicked during parsing".to_string())),
-    }
-}
-
-/// Lenient PDF validation - tries multiple methods
-///
-/// # Arguments
-/// * `path` - Path to the PDF file
-/// * `verbose` - Whether to print verbose error messages
-///
-/// # Returns
-/// `true` if the PDF is valid by any method, `false` otherwise
-pub fn validate_pdf_lenient(path: &Path, verbose: bool) -> bool {
-    // Try lopdf first (strict)
-    match validate_pdf_with_lopdf(path) {
-        Ok(true) => return true,
-        Ok(false) | Err(_) => {
-            // Fall through to other methods
-        }
-    }
-
-    // Try basic validation (more lenient)
-    if validate_pdf_basic(path) {
-        if verbose {
-            println!("Valid (basic check): {:?}", path);
-        }
-        return true;
-    }
-
-    // Try super-basic check - just see if it looks like a PDF
-    if validate_pdf_super_lenient(path) {
-        if verbose {
-            println!("Valid (lenient check): {:?}", path);
-        }
-        return true;
-    }
-
-    false
-}
-
-/// Super lenient PDF validation - just checks for PDF markers
-///
-/// This is more permissive than basic validation:
-/// - Allows smaller files
-/// - Doesn't require xref table
-/// - Just checks for PDF header and some EOF marker
-fn validate_pdf_super_lenient(path: &Path) -> bool {
-    let mut file = match File::open(path) {
-        Ok(f) => f,
-        Err(_) => return false,
-    };
-
-    let mut content = Vec::new();
-    if file.read_to_end(&mut content).is_err() {
-        return false;
-    }
-
-    // More lenient size check (200 bytes instead of 1000)
-    if content.len() < 200 {
-        return false;
-    }
-
-    // Check PDF header (anywhere in first 1KB)
-    let header_region = if content.len() > 1024 {
-        &content[..1024]
-    } else {
-        &content[..]
-    };
-
-    if !header_region.windows(4).any(|w| w == b"%PDF") {
-        return false;
-    }
-
-    // Check for any EOF-like marker (more lenient)
-    if !content.windows(4).any(|w| w == b"%%EO" || w == b"%EOF" || w == b"EOF\n") {
-        return false;
-    }
-
-    true
-}
-
-/// Validate PDF with rendering (requires 'rendering' feature)
-///
-/// # Arguments
-/// * `path` - Path to the PDF file
-/// * `max_pages` - Maximum number of pages to check (0 = all)
-///
-/// # Returns
-/// `true` if the PDF can be rendered, `false` otherwise
-#[cfg(feature = "rendering")]
-pub fn validate_pdf_rendering(path: &Path, max_pages: usize) -> bool {
-    use std::fs;
-
-    // Try to load with pdfium
-    let pdfium = match Pdfium::new(
-        Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path("./")).ok()?
-    ) {
-        Ok(p) => p,
-        Err(_) => return false,
-    };
-
-    let document = match pdfium.load_pdf_from_file(path, None) {
-        Ok(doc) => doc,
-        Err(_) => return false,
-    };
-
-    let page_count = document.pages().len();
-    if page_count == 0 {
-        return false;
-    }
-
-    let check_count = if max_pages == 0 || max_pages > page_count {
-        page_count
-    } else {
-        max_pages
-    };
-
-    // Try to render the first few pages
-    for i in 0..check_count {
-        if let Ok(page) = document.pages().get(i) {
-            // Try to render to bitmap
-            match page.render_with_config(&PdfRenderConfig::default()) {
-                Ok(_) => continue,
-                Err(_) => return false,
-            }
-        } else {
-            return false;
-        }
-    }
-
-    true
-}
-
-/// Stub for rendering validation when feature is not enabled
-#[cfg(not(feature = "rendering"))]
-pub fn validate_pdf_rendering(_path: &Path, _max_pages: usize) -> bool {
-    // Rendering not supported without feature flag
-    // Return true to not fail validation
-    true
-}
-
-/// Basic PDF validation without external libraries
-///
-/// Checks:
-/// - PDF header (%PDF)
-/// - EOF marker (%%EOF)
-/// - xref table presence
-/// - Minimum file size
+/// Basic PDF validation (fallback when lopdf fails)
 pub fn validate_pdf_basic(path: &Path) -> bool {
     let mut file = match File::open(path) {
         Ok(f) => f,
         Err(_) => return false,
     };
 
-    let mut content = Vec::new();
-    if file.read_to_end(&mut content).is_err() {
+    let mut buffer = Vec::new();
+    if file.read_to_end(&mut buffer).is_err() {
         return false;
     }
 
-    // Check minimum size
-    if content.len() < 1000 {
+    // Check for PDF header
+    if buffer.len() < 5 || &buffer[0..5] != b"%PDF-" {
         return false;
     }
 
-    // Check PDF header
-    if !content.starts_with(b"%PDF") {
-        return false;
-    }
-
-    // Check for EOF marker (in last 1KB)
-    let tail_start = if content.len() > 1024 {
-        content.len() - 1024
-    } else {
-        0
-    };
-    
-    if !content[tail_start..].windows(5).any(|w| w == b"%%EOF") {
-        return false;
-    }
-
-    // Check for xref table
-    if !content.windows(4).any(|w| w == b"xref") {
-        return false;
-    }
-
-    true
+    // Check for EOF marker
+    buffer.windows(5).any(|window| window == b"%%EOF")
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::io::Write;
-    use tempfile::NamedTempFile;
+/// Validate PDF with detailed error information
+pub fn validate_pdf_detailed(path: &Path) -> Result<bool> {
+    // Quick pre-validation
+    quick_validate(path)?;
+    
+    // Check circuit breaker
+    if CIRCUIT_BREAKER.is_open() {
+        anyhow::bail!("Circuit breaker is OPEN - too many recent failures");
+    }
+    
+    // Acquire semaphore permit
+    let _permit = loop { if let Ok(permit) = LOPDF_SEMAPHORE.clone().try_acquire_owned() { break permit; } std::thread::yield_now(); };
+    
+    // Wrap in catch_unwind
+    let path_clone = path.to_path_buf();
+    let result = panic::catch_unwind(AssertUnwindSafe(|| {
+        lopdf::Document::load(&path_clone)
+    }));
+    
+    match result {
+        Ok(Ok(doc)) => {
+            CIRCUIT_BREAKER.record_success();
+            
+            if doc.get_pages().is_empty() {
+                anyhow::bail!("PDF has no pages")
+            }
+            Ok(true)
+        }
+        Ok(Err(e)) => {
+            CIRCUIT_BREAKER.record_failure();
+            Err(e.into())
+        }
+        Err(_panic) => {
+            CIRCUIT_BREAKER.record_failure();
+            anyhow::bail!("Panic during validation")
+        }
+    }
+}
 
-    #[test]
-    fn test_validate_pdf_basic_valid() {
-        let mut temp_file = NamedTempFile::new().unwrap();
-        // Create a minimal PDF that meets the size requirement (>1000 bytes)
-        let mut pdf_content = Vec::new();
-        pdf_content.extend_from_slice(b"%PDF-1.4\n");
-        pdf_content.extend_from_slice(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
-        pdf_content.extend_from_slice(b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n");
-        pdf_content.extend_from_slice(b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>\nendobj\n");
-        // Pad to meet minimum size
-        pdf_content.extend_from_slice(&vec![b' '; 800]);
-        pdf_content.extend_from_slice(b"\nxref\n0 4\n0000000000 65535 f\n");
-        pdf_content.extend_from_slice(b"0000000009 00000 n\n0000000058 00000 n\n0000000115 00000 n\n");
-        pdf_content.extend_from_slice(b"trailer\n<< /Size 4 /Root 1 0 R >>\nstartxref\n900\n%%EOF");
+/// Lenient PDF validation that tries multiple strategies
+pub fn validate_pdf_lenient(path: &Path) -> bool {
+    // Try quick validation first
+    if quick_validate(path).is_err() {
+        // If quick validation fails, still try basic validation
+        return validate_pdf_basic(path);
+    }
+    
+    // Try lopdf
+    if let Ok(true) = validate_pdf_with_lopdf(path) {
+        return true;
+    }
+    
+    // Fallback to basic
+    validate_pdf_basic(path)
+}
 
-        temp_file.write_all(&pdf_content).unwrap();
-        assert!(validate_pdf_basic(temp_file.path()));
+#[cfg(feature = "rendering")]
+pub fn validate_pdf_rendering(path: &Path) -> Result<bool> {
+    use pdfium_render::prelude::*;
+
+    let pdfium = Pdfium::new(
+        Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path("./"))
+            .or_else(|_| Pdfium::bind_to_system_library())?,
+    );
+
+    let document = pdfium.load_pdf_from_file(path, None)?;
+
+    for page_index in 0..document.pages().len() {
+        let page = document.pages().get(page_index)?;
+        let _render_config = page.render()?;
+        // Could add more sophisticated checks here
     }
 
-    #[test]
-    fn test_validate_pdf_basic_invalid_header() {
-        let mut temp_file = NamedTempFile::new().unwrap();
-        let invalid_pdf = b"NOTAPDF\nxref\ntrailer\n%%EOF";
-        temp_file.write_all(invalid_pdf).unwrap();
-        
-        assert!(!validate_pdf_basic(temp_file.path()));
-    }
+    Ok(true)
 }

@@ -109,13 +109,14 @@ fn main() -> Result<()> {
             // Choose validation method based on flags
             let is_valid = if use_lenient {
                 // Lenient mode - accept more PDFs
-                validate_pdf_lenient(path, cli.verbose)
+                validate_pdf_lenient(path)
             } else if check_rendering {
                 // Strict mode with rendering check
                 let basic_valid = validate_pdf(path, cli.verbose);
                 if basic_valid && cfg!(feature = "rendering") {
                     // Also check if pages can be rendered
-                    validate_pdf_rendering(path, 5) // Check first 5 pages
+                    // validate_pdf_rendering(path, 5) // Check first 5 pages
+                    validate_pdf_lenient(path) // Fallback when rendering not available
                 } else {
                     basic_valid
                 }

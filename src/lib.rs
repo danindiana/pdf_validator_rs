@@ -14,7 +14,7 @@ pub use reporting::report_writer;
 pub mod prelude {
     pub use crate::core::validator::{
         validate_pdf, validate_pdf_with_lopdf, validate_pdf_basic,
-        validate_pdf_detailed, validate_pdf_lenient, validate_pdf_rendering
+        validate_pdf_detailed, validate_pdf_lenient, // validate_pdf_rendering
     };
     pub use crate::scanner::file_scanner::{collect_pdf_files, ValidationResult};
     pub use crate::scanner::duplicate_detector::{compute_file_hash, find_duplicates, DuplicateInfo};
