@@ -16,9 +16,9 @@ use super::circuit_breaker::CircuitBreaker;
 
 // Global semaphore to limit concurrent lopdf calls and prevent memory corruption
 // lopdf has known issues with parallel processing of malformed PDFs
-// Limiting to 8 concurrent operations balances safety with performance
+// Limiting to 12 concurrent operations balances safety with performance
 lazy_static::lazy_static! {
-    static ref LOPDF_SEMAPHORE: Arc<Semaphore> = Arc::new(Semaphore::new(8));
+    static ref LOPDF_SEMAPHORE: Arc<Semaphore> = Arc::new(Semaphore::new(12));
     static ref CIRCUIT_BREAKER: CircuitBreaker = CircuitBreaker::new(10, Duration::from_secs(60));
 }
 
