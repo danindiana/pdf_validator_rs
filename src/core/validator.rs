@@ -4,21 +4,15 @@ use anyhow::Result;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
-use std::panic::{self, AssertUnwindSafe};
-use std::sync::Arc;
-use std::time::Duration;
-use tokio::sync::Semaphore;
 
 #[cfg(feature = "rendering")]
 use pdfium_render::prelude::*;
 
 use super::circuit_breaker::CircuitBreaker;
+use std::time::Duration;
 
-// Global semaphore to limit concurrent lopdf calls and prevent memory corruption
-// lopdf has known issues with parallel processing of malformed PDFs
-// Limiting to 12 concurrent operations balances safety with performance
+// Circuit breaker for tracking repeated failures
 lazy_static::lazy_static! {
-    static ref LOPDF_SEMAPHORE: Arc<Semaphore> = Arc::new(Semaphore::new(12));
     static ref CIRCUIT_BREAKER: CircuitBreaker = CircuitBreaker::new(10, Duration::from_secs(60));
 }
 
@@ -76,11 +70,11 @@ pub fn validate_pdf(path: &Path, verbose: bool) -> bool {
         return false;
     }
     
-    // Try using lopdf first for robust validation
-    match validate_pdf_with_lopdf(path) {
+    // Try using pdf-rs for robust validation (thread-safe, pure Rust)
+    match validate_pdf_with_pdf_rs(path) {
         Ok(valid) => {
             if verbose && !valid {
-                eprintln!("Invalid (lopdf): {:?}", path);
+                eprintln!("Invalid (pdf-rs): {:?}", path);
             }
             valid
         }
@@ -94,48 +88,38 @@ pub fn validate_pdf(path: &Path, verbose: bool) -> bool {
     }
 }
 
-/// Validate PDF using lopdf library with semaphore and circuit breaker
-pub fn validate_pdf_with_lopdf(path: &Path) -> Result<bool> {
+/// Validate PDF using pdf-rs library (pure Rust, thread-safe)
+pub fn validate_pdf_with_pdf_rs(path: &Path) -> Result<bool> {
     // Check circuit breaker first
     if CIRCUIT_BREAKER.is_open() {
         anyhow::bail!("Circuit breaker is OPEN - too many recent failures");
     }
     
-    // Acquire semaphore permit (blocks here if 8 permits already in use)
-    let _permit = loop { if let Ok(permit) = LOPDF_SEMAPHORE.clone().try_acquire_owned() { break permit; } std::thread::yield_now(); };
-    
-    // Wrap in catch_unwind for panic isolation
-    let path_clone = path.to_path_buf();
-    let result = panic::catch_unwind(AssertUnwindSafe(|| {
-        lopdf::Document::load(&path_clone)
-    }));
-    
-    match result {
-        Ok(Ok(doc)) => {
-            // Success - reset circuit breaker
+    // pdf-rs is thread-safe, no semaphore needed
+    match pdf::file::FileOptions::cached().open(path) {
+        Ok(pdf_file) => {
             CIRCUIT_BREAKER.record_success();
             
             // Check if document has pages
-            if doc.get_pages().is_empty() {
+            let num_pages = pdf_file.num_pages();
+            if num_pages == 0 {
                 Ok(false)
             } else {
-                Ok(true)
+                // Verify we can actually access at least one page
+                match pdf_file.get_page(0) {
+                    Ok(_) => Ok(true),
+                    Err(_) => Ok(false),
+                }
             }
         }
-        Ok(Err(e)) => {
-            // lopdf error - record failure
+        Err(e) => {
             CIRCUIT_BREAKER.record_failure();
-            anyhow::bail!("lopdf parse error: {}", e)
-        }
-        Err(_panic) => {
-            // Panic occurred - record failure
-            CIRCUIT_BREAKER.record_failure();
-            anyhow::bail!("Panic during lopdf validation")
+            anyhow::bail!("pdf-rs parse error: {}", e)
         }
     }
 }
 
-/// Basic PDF validation (fallback when lopdf fails)
+/// Basic PDF validation (fallback when pdf-rs fails)
 pub fn validate_pdf_basic(path: &Path) -> bool {
     let mut file = match File::open(path) {
         Ok(f) => f,
@@ -166,31 +150,20 @@ pub fn validate_pdf_detailed(path: &Path) -> Result<bool> {
         anyhow::bail!("Circuit breaker is OPEN - too many recent failures");
     }
     
-    // Acquire semaphore permit
-    let _permit = loop { if let Ok(permit) = LOPDF_SEMAPHORE.clone().try_acquire_owned() { break permit; } std::thread::yield_now(); };
-    
-    // Wrap in catch_unwind
-    let path_clone = path.to_path_buf();
-    let result = panic::catch_unwind(AssertUnwindSafe(|| {
-        lopdf::Document::load(&path_clone)
-    }));
-    
-    match result {
-        Ok(Ok(doc)) => {
+    // pdf-rs is thread-safe, no semaphore needed
+    match pdf::file::FileOptions::cached().open(path) {
+        Ok(pdf_file) => {
             CIRCUIT_BREAKER.record_success();
             
-            if doc.get_pages().is_empty() {
+            let num_pages = pdf_file.num_pages();
+            if num_pages == 0 {
                 anyhow::bail!("PDF has no pages")
             }
             Ok(true)
         }
-        Ok(Err(e)) => {
+        Err(e) => {
             CIRCUIT_BREAKER.record_failure();
             Err(e.into())
-        }
-        Err(_panic) => {
-            CIRCUIT_BREAKER.record_failure();
-            anyhow::bail!("Panic during validation")
         }
     }
 }
@@ -203,8 +176,8 @@ pub fn validate_pdf_lenient(path: &Path) -> bool {
         return validate_pdf_basic(path);
     }
     
-    // Try lopdf
-    if let Ok(true) = validate_pdf_with_lopdf(path) {
+    // Try pdf-rs (thread-safe, pure Rust)
+    if let Ok(true) = validate_pdf_with_pdf_rs(path) {
         return true;
     }
     
