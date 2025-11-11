@@ -10,6 +10,10 @@
 ```
 
 <picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://img.shields.io/badge/Version-1.0.0-FF6B35?style=for-the-badge&logo=semantic-release&logoColor=white">
+  <img alt="Version" src="https://img.shields.io/badge/Version-1.0.0-FF6B35?style=for-the-badge&logo=semantic-release&logoColor=white">
+</picture>
+<picture>
   <source media="(prefers-color-scheme: dark)" srcset="https://img.shields.io/badge/Rust-1.90.0-FF6B35?style=for-the-badge&logo=rust&logoColor=white">
   <img alt="Rust Version" src="https://img.shields.io/badge/Rust-1.90.0-FF6B35?style=for-the-badge&logo=rust&logoColor=white">
 </picture>
@@ -22,8 +26,8 @@
   <img alt="Parallel Processing" src="https://img.shields.io/badge/Parallel-Rayon-FF6B35?style=for-the-badge&logo=apache-spark&logoColor=white">
 </picture>
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="https://img.shields.io/badge/License-Open_Source-FF6B35?style=for-the-badge">
-  <img alt="License" src="https://img.shields.io/badge/License-Open_Source-FF6B35?style=for-the-badge">
+  <source media="(prefers-color-scheme: dark)" srcset="https://img.shields.io/badge/License-MIT_OR_Apache--2.0-FF6B35?style=for-the-badge">
+  <img alt="License" src="https://img.shields.io/badge/License-MIT_OR_Apache--2.0-FF6B35?style=for-the-badge">
 </picture>
 
 ```

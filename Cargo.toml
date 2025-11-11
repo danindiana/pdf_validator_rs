@@ -1,7 +1,14 @@
 [package]
 name = "pdf_validator_rs"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
+authors = ["danindiana <benjamin@alphasort.com>"]
+description = "High-performance parallel PDF validation tool with duplicate detection and comprehensive reporting"
+repository = "https://github.com/danindiana/pdf_validator_rs"
+license = "MIT OR Apache-2.0"
+keywords = ["pdf", "validation", "parallel", "rayon", "duplicate-detection"]
+categories = ["command-line-utilities", "filesystem"]
+readme = "README.md"
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
