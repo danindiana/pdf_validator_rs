@@ -1,0 +1,21 @@
+PDF Validation Report
+====================
+Generated: SystemTime { tv_sec: 1762837758, tv_nsec: 838174801 }
+
+Summary Statistics:
+-------------------
+  Total files scanned: 6
+  Valid PDF files: 6
+  Invalid PDF files: 0
+  Validation success rate: 100.00%
+
+Valid Files:
+------------
+  Total: 6
+
+  /media/jeb/7514e32b-65c9-4a64-a233-5db2311455f42/incoming_Pdfsv3/neuromorphs/%2315.PDF
+  /media/jeb/7514e32b-65c9-4a64-a233-5db2311455f42/incoming_Pdfsv3/neuromorphs/1737593505.PDF
+  /media/jeb/7514e32b-65c9-4a64-a233-5db2311455f42/incoming_Pdfsv3/neuromorphs/Rod Harris (February 2019).PDF
+  /media/jeb/7514e32b-65c9-4a64-a233-5db2311455f42/incoming_Pdfsv3/neuromorphs/322633896.PDF
+  /media/jeb/7514e32b-65c9-4a64-a233-5db2311455f42/incoming_Pdfsv3/neuromorphs/49041_20150619_104659_2012BRAZIL.PDF
+  /media/jeb/7514e32b-65c9-4a64-a233-5db2311455f42/incoming_Pdfsv3/neuromorphs/P487.PDF

@@ -1,0 +1,31 @@
+[package]
+name = "pdf_validator_rs"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+clap = { version = "4.5", features = ["derive"] }
+rayon = "1.10"
+anyhow = "1.0"
+indicatif = { version = "0.17", features = ["rayon"] }
+walkdir = "2.5"
+sha2 = "0.10"
+
+# PDF parsing - using lopdf for basic validation
+lopdf = "0.34"
+
+# PDF rendering - using pdfium for rendering validation (optional feature)
+pdfium-render = { version = "0.8", optional = true }
+
+[features]
+default = []
+rendering = ["pdfium-render"]
+
+[dev-dependencies]
+tempfile = "3.14"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
