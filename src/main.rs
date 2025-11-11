@@ -1,10 +1,9 @@
 use anyhow::{Context, Result};
 use clap::Parser;
-use indicatif::{ProgressBar, ProgressStyle};
+use indicatif::{ParallelProgressIterator, ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 // Import from our modularized library
 use pdf_validator_rs::prelude::*;
@@ -99,12 +98,12 @@ fn main() -> Result<()> {
     };
 
     // Validate files in parallel
-    let processed = AtomicUsize::new(0);
     let check_rendering = !cli.no_render_check;
     let use_lenient = cli.lenient;
 
     let results: Vec<ValidationResult> = pdf_files
         .par_iter()
+        .progress_with(progress.clone())
         .map(|path| {
             // Choose validation method based on flags
             let is_valid = if use_lenient {
@@ -124,12 +123,6 @@ fn main() -> Result<()> {
                 // Normal strict mode
                 validate_pdf(path, cli.verbose)
             };
-
-            let count = processed.fetch_add(1, Ordering::Relaxed) + 1;
-
-            if !cli.batch && (count % 100 == 0 || count == total_files) {
-                progress.set_position(count as u64);
-            }
 
             ValidationResult {
                 path: path.clone(),
