@@ -110,6 +110,142 @@ The tool generates a detailed report (default: `validation_report_rust.txt`) con
 - Duplicate file groups (if duplicate detection enabled)
 - Processing statistics
 
+## Architecture & Design
+
+### Overall Program Flow
+
+The PDF validator follows a systematic workflow from CLI input to final report generation:
+
+```mermaid
+%%{init: {'theme':'base', 'themeVariables': { 'primaryColor':'#fff0','primaryTextColor':'#333','primaryBorderColor':'#333','lineColor':'#333','secondaryColor':'#fff0','tertiaryColor':'#fff0','background':'#fff0','mainBkg':'#fff0','secondBkg':'#fff0'}}}%%
+flowchart TD
+    Start([User Runs CLI]) --> Parse[Parse Command Line Args]
+    Parse --> ThreadPool[Initialize Rayon Thread Pool]
+    ThreadPool --> Scan[Scan Directory for PDFs]
+    Scan --> CheckRecursive{Recursive Mode?}
+    CheckRecursive -->|Yes| WalkDir[WalkDir: Traverse All Subdirectories]
+    CheckRecursive -->|No| ReadDir[ReadDir: Scan Single Directory]
+    WalkDir --> Collect[Collect PDF File Paths]
+    ReadDir --> Collect
+    Collect --> CheckEmpty{Files Found?}
+    CheckEmpty -->|No| Exit1([Exit: No Files])
+    CheckEmpty -->|Yes| Progress[Initialize Progress Bar]
+    Progress --> Parallel[Parallel Validation with Rayon]
+    Parallel --> ValidateLoop[For Each PDF File]
+    ValidateLoop --> SelectMode{Validation Mode}
+    SelectMode -->|Lenient| Lenient[validate_pdf_lenient]
+    SelectMode -->|Render Check| RenderCheck[validate_pdf + validate_pdf_rendering]
+    SelectMode -->|Normal| Normal[validate_pdf]
+    Lenient --> UpdateProgress[Update Progress Bar]
+    RenderCheck --> UpdateProgress
+    Normal --> UpdateProgress
+    UpdateProgress --> MoreFiles{More Files?}
+    MoreFiles -->|Yes| ValidateLoop
+    MoreFiles -->|No| Complete[Validation Complete]
+    Complete --> CheckDuplicates{Detect Duplicates?}
+    CheckDuplicates -->|Yes| HashFiles[Hash Valid Files with SHA-256]
+    CheckDuplicates -->|No| Summarize
+    HashFiles --> FindDups[Find Duplicate Groups]
+    FindDups --> DeleteDups{Delete Duplicates?}
+    DeleteDups -->|Yes| RemoveDups[Delete Duplicate Files]
+    DeleteDups -->|No| Summarize
+    RemoveDups --> Summarize
+    Summarize[Generate Summary Statistics] --> CheckInvalid{Delete Invalid?}
+    CheckInvalid -->|Yes| RemoveInvalid[Delete Invalid Files]
+    CheckInvalid -->|No| Report
+    RemoveInvalid --> Report
+    Report[Write Detailed Report] --> Display[Display Summary to User]
+    Display --> Exit2([Program Complete])
+```
+
+[View detailed flow diagram](docs/diagrams/overall-flow.md)
+
+### Validation Strategy
+
+The validator employs multiple validation strategies with fallback mechanisms:
+
+```mermaid
+%%{init: {'theme':'base', 'themeVariables': { 'primaryColor':'#fff0','primaryTextColor':'#333','primaryBorderColor':'#333','lineColor':'#333','secondaryColor':'#fff0','tertiaryColor':'#fff0','background':'#fff0','mainBkg':'#fff0','secondBkg':'#fff0'}}}%%
+flowchart TD
+    Start([PDF File Path]) --> ModeCheck{Validation Mode}
+    ModeCheck -->|Normal/Strict| NormalPath[validate_pdf]
+    ModeCheck -->|Lenient| LenientPath[validate_pdf_lenient]
+    ModeCheck -->|Rendering| RenderPath[validate_pdf + validate_pdf_rendering]
+    NormalPath --> Lopdf1[Try: validate_pdf_with_lopdf]
+    Lopdf1 --> LopdfCheck1{Success?}
+    LopdfCheck1 -->|Yes| PageCheck1{Has Pages?}
+    PageCheck1 -->|Yes| Valid1([Return: VALID])
+    PageCheck1 -->|No| Invalid1([Return: INVALID])
+    LopdfCheck1 -->|No| Fallback1[Try: validate_pdf_basic]
+    Fallback1 --> BasicResult1{Basic Valid?}
+    BasicResult1 -->|Yes| Valid2([Return: VALID])
+    BasicResult1 -->|No| Invalid2([Return: INVALID])
+```
+
+[View complete validation strategy](docs/diagrams/validation-strategy.md)
+
+### Parallel Processing Architecture
+
+The tool leverages Rayon for efficient parallel processing:
+
+```mermaid
+%%{init: {'theme':'base', 'themeVariables': { 'primaryColor':'#fff0','primaryTextColor':'#333','primaryBorderColor':'#333','lineColor':'#333','secondaryColor':'#fff0','tertiaryColor':'#fff0','background':'#fff0','mainBkg':'#fff0','secondBkg':'#fff0'}}}%%
+graph TB
+    subgraph Main["Main Thread"]
+        CLI[CLI Argument Parser]
+        Setup[Thread Pool Setup]
+        Scanner[File Scanner]
+        Progress[Progress Bar]
+    end
+    subgraph RayonPool["Rayon Thread Pool"]
+        Splitter[Work Splitter]
+        subgraph Worker1["Worker Thread 1"]
+            V1[Validate PDF 1]
+            V2[Validate PDF 2]
+        end
+        subgraph Worker2["Worker Thread 2"]
+            V4[Validate PDF 3]
+            V5[Validate PDF 4]
+        end
+        Collector[Result Collector]
+    end
+    CLI --> Setup --> Scanner --> Splitter
+    Splitter --> Worker1
+    Splitter --> Worker2
+    Worker1 --> Collector
+    Worker2 --> Collector
+```
+
+[View detailed parallel architecture](docs/diagrams/parallel-architecture.md)
+
+### Module Structure
+
+```mermaid
+%%{init: {'theme':'base', 'themeVariables': { 'primaryColor':'#fff0','primaryTextColor':'#333','primaryBorderColor':'#333','lineColor':'#333','secondaryColor':'#fff0','tertiaryColor':'#fff0','background':'#fff0','mainBkg':'#fff0','secondBkg':'#fff0'}}}%%
+graph LR
+    subgraph Binary["Binary Crate"]
+        Main[main.rs]
+    end
+    subgraph Library["Library: pdf_validator_rs"]
+        subgraph CoreMod["core::"]
+            Validator[validator.rs]
+        end
+        subgraph ScannerMod["scanner::"]
+            FileScanner[file_scanner.rs]
+            DupDetector[duplicate_detector.rs]
+        end
+        subgraph ReportingMod["reporting::"]
+            ReportWriter[report_writer.rs]
+        end
+    end
+    Main --> Validator
+    Main --> FileScanner
+    Main --> DupDetector
+    Main --> ReportWriter
+```
+
+[View detailed module structure](docs/diagrams/module-structure.md)
+
 ## Project Structure
 
 ```
@@ -127,6 +263,12 @@ pdf_validator_rs/
 │   └── reporting/           # Report generation
 │       ├── mod.rs
 │       └── report_writer.rs
+├── docs/
+│   └── diagrams/            # Architecture diagrams
+│       ├── overall-flow.md
+│       ├── validation-strategy.md
+│       ├── parallel-architecture.md
+│       └── module-structure.md
 ├── examples/
 │   └── diagnose_discrepancies.rs  # Diagnostic tool
 ├── Cargo.toml
