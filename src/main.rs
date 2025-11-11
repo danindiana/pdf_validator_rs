@@ -4,6 +4,8 @@ use indicatif::{ParallelProgressIterator, ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 // Import from our modularized library
 use pdf_validator_rs::prelude::*;
@@ -59,6 +61,16 @@ struct Cli {
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
+    // Set up graceful shutdown handler
+    let shutdown_requested = Arc::new(AtomicBool::new(false));
+    let shutdown_flag = shutdown_requested.clone();
+    
+    ctrlc::set_handler(move || {
+        eprintln!("\n⚠️  Shutdown requested. Finishing current files...");
+        shutdown_flag.store(true, Ordering::SeqCst);
+    })
+    .context("Error setting Ctrl-C handler")?;
+
     // Set up rayon thread pool
     if let Some(workers) = cli.workers {
         rayon::ThreadPoolBuilder::new()
@@ -100,11 +112,17 @@ fn main() -> Result<()> {
     // Validate files in parallel
     let check_rendering = !cli.no_render_check;
     let use_lenient = cli.lenient;
+    let shutdown_check = shutdown_requested.clone();
 
     let results: Vec<ValidationResult> = pdf_files
         .par_iter()
         .progress_with(progress.clone())
-        .map(|path| {
+        .filter_map(|path| {
+            // Check if shutdown was requested
+            if shutdown_check.load(Ordering::SeqCst) {
+                return None; // Stop processing new files
+            }
+            
             // Choose validation method based on flags
             let is_valid = if use_lenient {
                 // Lenient mode - accept more PDFs
@@ -124,15 +142,29 @@ fn main() -> Result<()> {
                 validate_pdf(path, cli.verbose)
             };
 
-            ValidationResult {
+            Some(ValidationResult {
                 path: path.clone(),
                 is_valid,
-            }
+            })
         })
         .collect();
 
+    // Display progress summary
+    let processed_count = results.len();
+    let was_interrupted = shutdown_requested.load(Ordering::SeqCst);
+    
     if !cli.batch {
-        progress.finish_with_message("Validation complete!");
+        if was_interrupted {
+            progress.finish_and_clear();
+            eprintln!("\n⏹️  Graceful shutdown complete");
+            eprintln!("📊 Processed {}/{} files ({:.1}%)", 
+                processed_count, 
+                total_files,
+                (processed_count as f64 / total_files as f64) * 100.0
+            );
+        } else {
+            progress.finish_with_message("Validation complete!");
+        }
         println!();
     }
 

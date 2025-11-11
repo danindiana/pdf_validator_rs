@@ -19,6 +19,7 @@ walkdir = "2.5"
 sha2 = "0.10"
 lazy_static = "1.5"
 tokio = { version = "1.41", features = ["sync"] }
+ctrlc = "3.4"
 
 # PDF parsing - using lopdf for basic validation
 lopdf = "0.34"
