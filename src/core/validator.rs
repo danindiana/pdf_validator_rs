@@ -37,17 +37,46 @@ pub fn validate_pdf(path: &Path, verbose: bool) -> bool {
 
 /// Validate PDF using lopdf library
 pub fn validate_pdf_with_lopdf(path: &Path) -> Result<bool> {
-    match lopdf::Document::load(path) {
-        Ok(doc) => {
-            // Check if document has pages
-            if doc.get_pages().is_empty() {
-                return Ok(false);
+    use std::panic;
+    use std::fs;
+
+    // Check file size first - skip extremely large files that might cause issues
+    let metadata = fs::metadata(path)?;
+    let file_size = metadata.len();
+
+    // Skip files larger than 500MB to prevent memory issues
+    if file_size > 500_000_000 {
+        anyhow::bail!("File too large (>500MB): {} bytes", file_size);
+    }
+
+    // Skip empty or suspiciously small files
+    if file_size < 100 {
+        anyhow::bail!("File too small: {} bytes", file_size);
+    }
+
+    // Use catch_unwind to prevent panics from crashing the entire process
+    let path_clone = path.to_path_buf();
+    let result = panic::catch_unwind(|| {
+        match lopdf::Document::load(&path_clone) {
+            Ok(doc) => {
+                // Check if document has pages
+                if doc.get_pages().is_empty() {
+                    return Ok(false);
+                }
+                Ok(true)
             }
-            Ok(true)
+            Err(e) => {
+                // Return the error for detailed logging
+                anyhow::bail!("lopdf parse error: {}", e);
+            }
         }
-        Err(e) => {
-            // Return the error for detailed logging
-            anyhow::bail!("lopdf parse error: {}", e);
+    });
+
+    match result {
+        Ok(res) => res,
+        Err(_) => {
+            // Panic occurred, treat as invalid PDF
+            anyhow::bail!("lopdf panicked during parsing");
         }
     }
 }
@@ -60,17 +89,26 @@ pub fn validate_pdf_with_lopdf(path: &Path) -> Result<bool> {
 /// # Returns
 /// Tuple of (is_valid, error_message)
 pub fn validate_pdf_detailed(path: &Path) -> (bool, Option<String>) {
-    match lopdf::Document::load(path) {
-        Ok(doc) => {
-            if doc.get_pages().is_empty() {
-                (false, Some("No pages found in document".to_string()))
-            } else {
-                (true, None)
+    use std::panic;
+
+    let result = panic::catch_unwind(|| {
+        match lopdf::Document::load(path) {
+            Ok(doc) => {
+                if doc.get_pages().is_empty() {
+                    (false, Some("No pages found in document".to_string()))
+                } else {
+                    (true, None)
+                }
+            }
+            Err(e) => {
+                (false, Some(format!("lopdf error: {}", e)))
             }
         }
-        Err(e) => {
-            (false, Some(format!("lopdf error: {}", e)))
-        }
+    });
+
+    match result {
+        Ok(res) => res,
+        Err(_) => (false, Some("lopdf panicked during parsing".to_string())),
     }
 }
 

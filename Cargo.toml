@@ -1,6 +1,6 @@
 [package]
 name = "pdf_validator_rs"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2021"
 authors = ["danindiana <benjamin@alphasort.com>"]
 description = "High-performance parallel PDF validation tool with duplicate detection and comprehensive reporting"
